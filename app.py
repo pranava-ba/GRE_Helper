@@ -459,7 +459,7 @@ def run_quiz(username, words, mode):
     
     # Award achievements
     user_data = conn_u.execute("SELECT points, streak, correct FROM users WHERE username=?", (username,)).fetchone()
-    if user_
+    if user_data:
         points, streak, total_correct = user_data
         award_achievements(username, points, streak, total_correct)
     
@@ -482,7 +482,7 @@ display_word_of_the_day()
 
 # User stats
 user_data = conn_u.execute("SELECT streak, correct, points, level FROM users WHERE username=?", (username,)).fetchone()
-if user_
+if user_data:
     streak, correct, points, level = user_data
     next_level = (level + 1) * 100
     progress = (points % 100) / 100 if points % 100 != 0 else 1
