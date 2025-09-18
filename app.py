@@ -2,6 +2,11 @@
 import streamlit as st, sqlite3, pathlib, datetime as dt, pytz, time, random, pandas as pd
 from PyDictionary import PyDictionary
 import bcrypt
+# Create admin user if it doesn't exist
+admin_password = st.secrets.get("passwords", {}).get("admin", "admin@123")  # Default if not set
+admin_hash = hash_password(admin_password)
+conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("admin", admin_hash))
+conn_u.commit()
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="📚 Vocab Quiz", page_icon="📚", layout="wide")
