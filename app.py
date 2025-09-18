@@ -114,20 +114,26 @@ def hash_password(password):
 def verify_password(password, hashed):
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-# Initialize demo and admin users if needed
-c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
-if not c:
-    # Create demo user
-    demo_hash = hash_password("demo")
-    conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("demo", demo_hash))
+# Ensure demo and admin users exist
+def ensure_default_users():
+    # Create demo user if it doesn't exist
+    demo_exists = conn_u.execute("SELECT 1 FROM users WHERE username='demo'").fetchone()
+    if not demo_exists:
+        demo_hash = hash_password("demo")
+        conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("demo", demo_hash))
     
-    # Create admin user with password admin@123
-    admin_hash = hash_password("admin@123")
-    conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("admin", admin_hash))
+    # Create admin user if it doesn't exist
+    admin_exists = conn_u.execute("SELECT 1 FROM users WHERE username='admin'").fetchone()
+    if not admin_exists:
+        admin_hash = hash_password("admin@123")
+        conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("admin", admin_hash))
     
     conn_u.commit()
-    c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
 
+ensure_default_users()
+
+# Load credentials
+c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
 credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
 
 # Simple authentication without stauth
@@ -357,37 +363,38 @@ def study_mode(username):
         st.session_state.current_card = 0
         current_idx = 0
     
-    word, definition, pronunciation, example = known_words[current_idx]
-    
-    # Flashcard display
-    if st.button(" Flip Card " if not st.session_state.show_back else " Flip Back ", key="flip"):
-        st.session_state.show_back = not st.session_state.show_back
-        st.rerun()
-    
-    st.markdown('<div class="flashcard">', unsafe_allow_html=True)
-    if not st.session_state.show_back:
-        st.markdown(f"### {word.upper()}")
-        st.write("*Click 'Flip Card' to see definition*")
-    else:
-        st.write("**Pronunciation:**", pronunciation)
-        st.write("**Definition:**", definition)
-        if example: st.write("**Example:**", example)
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Navigation
-    col1, col2, col3 = st.columns([1,2,1])
-    with col1:
-        if st.button("⬅️ Previous") and current_idx > 0:
-            st.session_state.current_card -= 1
-            st.session_state.show_back = False
+    if len(known_words) > 0:
+        word, definition, pronunciation, example = known_words[current_idx]
+        
+        # Flashcard display
+        if st.button(" Flip Card " if not st.session_state.show_back else " Flip Back ", key="flip"):
+            st.session_state.show_back = not st.session_state.show_back
             st.rerun()
-    with col2:
-        st.write(f"Card {current_idx + 1} of {len(known_words)}")
-    with col3:
-        if st.button("Next ➡️") and current_idx < len(known_words) - 1:
-            st.session_state.current_card += 1
-            st.session_state.show_back = False
-            st.rerun()
+        
+        st.markdown('<div class="flashcard">', unsafe_allow_html=True)
+        if not st.session_state.show_back:
+            st.markdown(f"### {word.upper()}")
+            st.write("*Click 'Flip Card' to see definition*")
+        else:
+            st.write("**Pronunciation:**", pronunciation)
+            st.write("**Definition:**", definition)
+            if example: st.write("**Example:**", example)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Navigation
+        col1, col2, col3 = st.columns([1,2,1])
+        with col1:
+            if st.button("⬅️ Previous") and current_idx > 0:
+                st.session_state.current_card -= 1
+                st.session_state.show_back = False
+                st.rerun()
+        with col2:
+            st.write(f"Card {current_idx + 1} of {len(known_words)}")
+        with col3:
+            if st.button("Next ➡️") and current_idx < len(known_words) - 1:
+                st.session_state.current_card += 1
+                st.session_state.show_back = False
+                st.rerun()
 
 # ---------- STREAK ----------
 def streak_info(username):
