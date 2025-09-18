@@ -1,7 +1,6 @@
 # app.py – complete Streamlit vocab-quiz app with gamification
 import streamlit as st, sqlite3, pathlib, datetime as dt, pytz, time, random, pandas as pd
 from PyDictionary import PyDictionary
-import streamlit_authenticator as stauth
 import bcrypt
 
 # ---------- CONFIG ----------
@@ -115,33 +114,66 @@ def hash_password(password):
 def verify_password(password, hashed):
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
+# Initialize demo user if needed
 c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
-credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
-if not credentials["usernames"]:
+if not c:
     demo_hash = hash_password("demo")
     conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("demo", demo_hash))
     conn_u.commit()
     c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
-    credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
+
+credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
 
 # Simple authentication without stauth
-def login():
-    st.write("### Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if username in credentials["usernames"]:
-            stored_hash = credentials["usernames"][username]["password"]
-            if verify_password(password, stored_hash):
-                st.session_state.authenticated = True
-                st.session_state.username = username
-                st.session_state.name = username
-                st.rerun()
+def login_page():
+    st.title("📚 Vocab Quiz - Login")
+    
+    # Create tabs for login and registration
+    tab1, tab2 = st.tabs(["Login", "Create Account"])
+    
+    with tab1:
+        st.write("### Login")
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Login"):
+            if username in credentials["usernames"]:
+                stored_hash = credentials["usernames"][username]["password"]
+                if verify_password(password, stored_hash):
+                    st.session_state.authenticated = True
+                    st.session_state.username = username
+                    st.session_state.name = username
+                    st.rerun()
+                else:
+                    st.error("Incorrect password")
             else:
-                st.error("Incorrect password")
-        else:
-            st.error("User not found")
-    return False, None, None
+                st.error("User not found")
+    
+    with tab2:
+        st.write("### Create New Account")
+        new_username = st.text_input("Choose Username", key="register_username")
+        new_password = st.text_input("Choose Password", type="password", key="register_password")
+        confirm_password = st.text_input("Confirm Password", type="password", key="confirm_password")
+        if st.button("Create Account"):
+            # Validation
+            if not new_username or not new_password:
+                st.error("Please fill in all fields")
+            elif new_password != confirm_password:
+                st.error("Passwords don't match")
+            else:
+                # Check if user already exists
+                existing = conn_u.execute("SELECT 1 FROM users WHERE username=?", (new_username,)).fetchone()
+                if existing:
+                    st.error("Username already taken")
+                else:
+                    hp = hash_password(new_password)
+                    try:
+                        conn_u.execute("INSERT INTO users(username,pwd_hash) VALUES(?,?)", (new_username, hp))
+                        conn_u.commit()
+                        # Update credentials
+                        credentials["usernames"][new_username] = {"name": new_username, "password": hp}
+                        st.success("Account created! Please switch to the Login tab to sign in.")
+                    except sqlite3.IntegrityError:
+                        st.error("Username taken")
 
 def logout():
     if st.sidebar.button("Logout"):
@@ -153,7 +185,7 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    login()
+    login_page()
     st.stop()
 
 username = st.session_state.username
@@ -537,17 +569,8 @@ with st.expander("Suggest a new word"):
         conn_w.execute("INSERT INTO suggestions(word,username,date) VALUES(?,?,?)", (sw, username, str(TODAY_IST)))
         conn_w.commit(); st.success("Suggested!")
 
-with st.expander("Create account"):
-    nu = st.text_input("New username")
-    np = st.text_input("New password", type="password")
-    if st.button("Register"):
-        # Check if user already exists
-        existing = conn_u.execute("SELECT 1 FROM users WHERE username=?", (nu,)).fetchone()
-        if existing:
-            st.error("Username already taken")
-        else:
-            hp = hash_password(np)
-            try:
-                conn_u.execute("INSERT INTO users(username,pwd_hash) VALUES(?,?)", (nu, hp))
-                conn_u.commit(); st.success("Account created! Please login above.")
-            except sqlite3.IntegrityError: st.error("Username taken")
+# Admin login info in sidebar
+with st.sidebar:
+    st.write("---")
+    st.write("### Admin Access")
+    st.info("Username: `admin`\n\nPassword: Set in `.streamlit/secrets.toml`")
