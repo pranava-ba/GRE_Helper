@@ -3,3 +3,4 @@ streamlit-authenticator>=0.2.3
 PyDictionary==2.0.1
 pytz
 pandas
+plotly
