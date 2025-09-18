@@ -2,6 +2,7 @@
 import streamlit as st, sqlite3, pathlib, datetime as dt, pytz, time, random, pandas as pd
 from PyDictionary import PyDictionary
 import streamlit_authenticator as stauth
+import bcrypt
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="📚 Vocab Quiz", page_icon="📚", layout="wide")
@@ -108,19 +109,56 @@ conn_u = init_user_db()
 conn_w = init_word_db()
 
 # ---------- AUTH ----------
+def hash_password(password):
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password, hashed):
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
 c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
 credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
 if not credentials["usernames"]:
-    demo_hash = stauth.Hasher(["demo"]).generate()[0]
+    demo_hash = hash_password("demo")
     conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("demo", demo_hash))
     conn_u.commit()
     c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
     credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
 
-authenticator = stauth.Authenticate(credentials, "quiz_cookie", "key123", cookie_expiry_days=30)
-name, auth_status, username = authenticator.login("Login", "main")
-if not auth_status: st.stop()
-authenticator.logout("Logout", "sidebar")
+# Simple authentication without stauth
+def login():
+    st.write("### Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if username in credentials["usernames"]:
+            stored_hash = credentials["usernames"][username]["password"]
+            if verify_password(password, stored_hash):
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.session_state.name = username
+                st.rerun()
+            else:
+                st.error("Incorrect password")
+        else:
+            st.error("User not found")
+    return False, None, None
+
+def logout():
+    if st.sidebar.button("Logout"):
+        st.session_state.authenticated = False
+        st.session_state.username = None
+        st.rerun()
+
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    login()
+    st.stop()
+
+username = st.session_state.username
+name = st.session_state.name
+logout()
 
 # ---------- ADMIN ----------
 def add_word(word, by="admin"):
@@ -503,8 +541,13 @@ with st.expander("Create account"):
     nu = st.text_input("New username")
     np = st.text_input("New password", type="password")
     if st.button("Register"):
-        hp = stauth.Hasher([np]).generate()[0]
-        try:
-            conn_u.execute("INSERT INTO users(username,pwd_hash) VALUES(?,?)", (nu, hp))
-            conn_u.commit(); st.success("Created – return to login")
-        except sqlite3.IntegrityError: st.error("Username taken")
+        # Check if user already exists
+        existing = conn_u.execute("SELECT 1 FROM users WHERE username=?", (nu,)).fetchone()
+        if existing:
+            st.error("Username already taken")
+        else:
+            hp = hash_password(np)
+            try:
+                conn_u.execute("INSERT INTO users(username,pwd_hash) VALUES(?,?)", (nu, hp))
+                conn_u.commit(); st.success("Account created! Please login above.")
+            except sqlite3.IntegrityError: st.error("Username taken")
