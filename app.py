@@ -221,26 +221,37 @@ with st.sidebar:
     if username == "admin":
         st.write("### Admin Panel")
         st.info("Admin password is: `admin@123`")
+        
+        # Show current word count
+        word_count = conn_w.execute("SELECT COUNT(*) FROM words").fetchone()[0]
+        st.write(f"📚 Currently have {word_count} words in database")
+        
         batch = st.text_area("Paste words (line separated)")
         if st.button("Add batch"):
             added_count = 0
+            skipped_count = 0
             for w in batch.splitlines():
                 if w.strip():
                     result = add_word(w.strip())
                     if result == "Added":
                         added_count += 1
-            st.success(f"Added {added_count} words!")
+                    elif result == "Exists":
+                        skipped_count += 1
+            st.success(f"✅ Added {added_count} words, ⚠️ Skipped {skipped_count} existing words")
         
         up = st.file_uploader("Or upload .txt file")
         if up:
             content = up.read().decode()
             added_count = 0
+            skipped_count = 0
             for w in content.splitlines():
                 if w.strip():
                     result = add_word(w.strip())
                     if result == "Added":
                         added_count += 1
-            st.success(f"Added {added_count} words from file!")
+                    elif result == "Exists":
+                        skipped_count += 1
+            st.success(f"✅ Added {added_count} words from file, ⚠️ Skipped {skipped_count} existing words")
 
 # ---------- WORD OF THE DAY ----------
 def get_word_of_the_day():
@@ -609,7 +620,11 @@ if username == "admin":
     if st.sidebar.button("Add Sample Words"):
         sample_words = ["serendipity", "ephemeral", "ubiquitous", "eloquent", "pragmatic"]
         added = 0
+        skipped = 0
         for word in sample_words:
-            if add_word(word, "admin") == "Added":
+            result = add_word(word, "admin")
+            if result == "Added":
                 added += 1
-        st.sidebar.success(f"Added {added} sample words!")
+            elif result == "Exists":
+                skipped += 1
+        st.sidebar.success(f"Added {added} sample words, skipped {skipped} existing words!")
