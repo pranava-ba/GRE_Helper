@@ -1,10 +1,25 @@
-# app.py – complete Streamlit vocab-quiz app with gamification
-import streamlit as st, sqlite3, pathlib, datetime as dt, pytz, time, random, pandas as pd
+# app.py – Enhanced Streamlit vocab-quiz app with comprehensive improvements
+import streamlit as st
+import sqlite3
+import pathlib
+import datetime as dt
+import pytz
+import time
+import random
+import pandas as pd
 from PyDictionary import PyDictionary
 import bcrypt
+import logging
+import json
+from typing import Optional, List, Tuple, Dict
+import plotly.express as px
+import plotly.graph_objects as go
+from collections import defaultdict
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="📚 Vocab Quiz", page_icon="📚", layout="wide")
+
+# Enhanced CSS with better animations and mobile responsiveness
 st.markdown("""
 <style>
     [data-testid="stAppViewContainer"] {
@@ -23,608 +38,764 @@ st.markdown("""
         background-color: #262730;
     }
     .flashcard {
-        background-color: #262730;
-        border-radius: 10px;
-        padding: 20px;
-        margin: 10px 0;
+        background: linear-gradient(145deg, #2d3748, #4a5568);
+        border-radius: 15px;
+        padding: 30px;
+        margin: 15px 0;
         text-align: center;
         cursor: pointer;
         transition: all 0.3s ease;
-        border: 2px solid #4a4a4a;
+        border: 2px solid #4a5568;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        min-height: 200px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
     }
     .flashcard:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+        transform: translateY(-8px);
+        box-shadow: 0 12px 25px rgba(0,0,0,0.4);
+        border-color: #667eea;
     }
     .achievement-badge {
         display: inline-block;
-        padding: 5px 10px;
+        padding: 8px 15px;
         margin: 5px;
-        border-radius: 15px;
-        background-color: #1e3a8a;
+        border-radius: 20px;
+        background: linear-gradient(45deg, #667eea, #764ba2);
         color: white;
         font-weight: bold;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        transition: transform 0.2s;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+        100% { transform: scale(1); }
+    }
+    .new-achievement {
+        animation: bounce 0.5s ease-in-out;
+    }
+    @keyframes bounce {
+        0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+        40% { transform: translateY(-10px); }
+        60% { transform: translateY(-5px); }
     }
     .wod-container {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 20px;
+        padding: 25px;
+        margin-bottom: 25px;
+        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+    .stats-card {
+        background: linear-gradient(145deg, #2d3748, #4a5568);
         border-radius: 15px;
         padding: 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        text-align: center;
+        border: 1px solid rgba(255,255,255,0.1);
+        transition: transform 0.2s;
     }
-    .level-badge {
-        background-color: #059669;
-        color: white;
-        padding: 3px 8px;
-        border-radius: 10px;
-        font-size: 0.8em;
+    .stats-card:hover {
+        transform: translateY(-5px);
     }
-    .points-display {
-        background-color: #7c3aed;
-        color: white;
-        padding: 5px 10px;
+    .quiz-word-card {
+        background: linear-gradient(145deg, #1a202c, #2d3748);
         border-radius: 15px;
-        font-weight: bold;
+        padding: 20px;
+        margin: 10px 0;
+        border: 2px solid #4a5568;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    .quiz-word-card:hover {
+        border-color: #667eea;
+    }
+    .progress-ring {
+        transform: rotate(-90deg);
+    }
+    .loading-spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #667eea;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 20px auto;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    .error-toast {
+        background-color: #fed7d7;
+        color: #9b2c2c;
+        padding: 10px;
+        border-radius: 8px;
+        border-left: 4px solid #e53e3e;
+        margin: 10px 0;
+    }
+    .success-toast {
+        background-color: #c6f6d5;
+        color: #276749;
+        padding: 10px;
+        border-radius: 8px;
+        border-left: 4px solid #38a169;
+        margin: 10px 0;
+    }
+    @media (max-width: 768px) {
+        .flashcard {
+            padding: 20px;
+            min-height: 150px;
+        }
+        .stats-card {
+            padding: 15px;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
 
-DB_U      = pathlib.Path("users.db")
-DB_W      = pathlib.Path("words.db")
-IST       = pytz.timezone("Asia/Kolkata")
+# ---------- CONSTANTS ----------
+DB_U = pathlib.Path("users.db")
+DB_W = pathlib.Path("words.db")
+IST = pytz.timezone("Asia/Kolkata")
 TODAY_IST = dt.datetime.now(IST).date()
-dictionary = PyDictionary()
 
-# ---------- DB BOOTSTRAP ----------
-def init_user_db():
-    conn = sqlite3.connect(DB_U, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users(
-        username TEXT PRIMARY KEY, pwd_hash TEXT, streak INTEGER DEFAULT 0,
-        total_q INTEGER DEFAULT 0, correct INTEGER DEFAULT 0,
-        time_spent REAL DEFAULT 0, last_quiz_date TEXT, points INTEGER DEFAULT 0,
-        level INTEGER DEFAULT 1)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS quiz_log(
-        username TEXT, date TEXT, quiz_type TEXT, length INTEGER, correct INTEGER, time_spent REAL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS word_user(
-        username TEXT, word TEXT, status TEXT, date TEXT, PRIMARY KEY(username, word))""")
-    c.execute("""CREATE TABLE IF NOT EXISTS follows(
-        follower TEXT, following TEXT, PRIMARY KEY(follower, following))""")
-    c.execute("""CREATE TABLE IF NOT EXISTS user_achievements(
-        username TEXT, achievement TEXT, date_earned TEXT, PRIMARY KEY(username, achievement))""")
-    conn.commit(); return conn
+# ---------- LOGGING SETUP ----------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-def init_word_db():
-    conn = sqlite3.connect(DB_W, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS words(
-        word TEXT PRIMARY KEY, def TEXT, pron TEXT, ety TEXT,
-        ex1 TEXT, ex2 TEXT, added_by TEXT, date_added TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS suggestions(
-        word TEXT, username TEXT, date TEXT)""")
-    conn.commit(); return conn
-
-conn_u = init_user_db()
-conn_w = init_word_db()
-
-# ---------- AUTH ----------
-def hash_password(password):
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password, hashed):
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-# Ensure demo and admin users exist
-def ensure_default_users():
-    # Create demo user if it doesn't exist
-    demo_exists = conn_u.execute("SELECT 1 FROM users WHERE username='demo'").fetchone()
-    if not demo_exists:
-        demo_hash = hash_password("demo")
-        conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("demo", demo_hash))
+# ---------- DATABASE MANAGER ----------
+class DatabaseManager:
+    def __init__(self):
+        self.conn_u = self.init_user_db()
+        self.conn_w = self.init_word_db()
+        self.dictionary = PyDictionary()
     
-    # Create admin user if it doesn't exist
-    admin_exists = conn_u.execute("SELECT 1 FROM users WHERE username='admin'").fetchone()
-    if not admin_exists:
-        admin_hash = hash_password("admin@123")
-        conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("admin", admin_hash))
-    
-    conn_u.commit()
-
-ensure_default_users()
-
-# Load credentials
-c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
-credentials = {"usernames":{u:{"name":u,"password":p} for u,p in c}}
-
-# Simple authentication without stauth
-def login_page():
-    st.title("📚 Vocab Quiz - Login")
-    
-    # Create tabs for login and registration
-    tab1, tab2 = st.tabs(["Login", "Create Account"])
-    
-    with tab1:
-        st.write("### Login")
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Login"):
-            if username in credentials["usernames"]:
-                stored_hash = credentials["usernames"][username]["password"]
-                if verify_password(password, stored_hash):
-                    st.session_state.authenticated = True
-                    st.session_state.username = username
-                    st.session_state.name = username
-                    st.rerun()
-                else:
-                    st.error("Incorrect password")
-            else:
-                st.error("User not found")
-    
-    with tab2:
-        st.write("### Create New Account")
-        new_username = st.text_input("Choose Username", key="register_username")
-        new_password = st.text_input("Choose Password", type="password", key="register_password")
-        confirm_password = st.text_input("Confirm Password", type="password", key="confirm_password")
-        if st.button("Create Account"):
-            # Validation
-            if not new_username or not new_password:
-                st.error("Please fill in all fields")
-            elif new_password != confirm_password:
-                st.error("Passwords don't match")
-            else:
-                # Check if user already exists
-                existing = conn_u.execute("SELECT 1 FROM users WHERE username=?", (new_username,)).fetchone()
-                if existing:
-                    st.error("Username already taken")
-                else:
-                    hp = hash_password(new_password)
-                    try:
-                        conn_u.execute("INSERT INTO users(username,pwd_hash) VALUES(?,?)", (new_username, hp))
-                        conn_u.commit()
-                        # Update credentials
-                        credentials["usernames"][new_username] = {"name": new_username, "password": hp}
-                        st.success("Account created! Please switch to the Login tab to sign in.")
-                    except sqlite3.IntegrityError:
-                        st.error("Username taken")
-
-def logout():
-    if st.sidebar.button("Logout"):
-        st.session_state.authenticated = False
-        st.session_state.username = None
-        st.rerun()
-
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    login_page()
-    st.stop()
-
-username = st.session_state.username
-name = st.session_state.name
-logout()
-
-# ---------- ADMIN ----------
-def add_word(word, by="admin"):
-    word = word.lower()
-    if conn_w.execute("SELECT 1 FROM words WHERE word=?", (word,)).fetchone(): return "Exists"
-    try:
-        meaning = dictionary.meaning(word) or {"N/A":["No definition"]}
-        pron = dictionary.getPhonetic(word) or ""
-        ex   = dictionary.getSentences(word) or []
-        conn_w.execute("INSERT INTO words(word,def,pron,ety,ex1,ex2,added_by,date_added) VALUES(?,?,?,?,?,?,?,?)",
-                      (word, str(meaning), pron, "", ex[0] if ex else "", ex[1] if len(ex)>1 else "", by, str(TODAY_IST)))
-        conn_w.commit(); return "Added"
-    except Exception as e: return f"Error: {e}"
-
-with st.sidebar:
-    if username == "admin":
-        st.write("### Admin Panel")
-        st.info("Admin password is: `admin@123`")
+    def init_user_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(DB_U, check_same_thread=False)
+        c = conn.cursor()
         
-        # Show current word count
-        word_count = conn_w.execute("SELECT COUNT(*) FROM words").fetchone()[0]
-        st.write(f"📚 Currently have {word_count} words in database")
+        # Enhanced users table
+        c.execute("""CREATE TABLE IF NOT EXISTS users(
+            username TEXT PRIMARY KEY,
+            pwd_hash TEXT NOT NULL,
+            streak INTEGER DEFAULT 0,
+            total_q INTEGER DEFAULT 0,
+            correct INTEGER DEFAULT 0,
+            time_spent REAL DEFAULT 0,
+            last_quiz_date TEXT,
+            points INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_login TEXT DEFAULT CURRENT_TIMESTAMP,
+            study_streak INTEGER DEFAULT 0,
+            last_study_date TEXT,
+            total_study_time REAL DEFAULT 0
+        )""")
         
-        batch = st.text_area("Paste words (line separated)")
-        if st.button("Add batch"):
-            added_count = 0
-            skipped_count = 0
-            for w in batch.splitlines():
-                if w.strip():
-                    result = add_word(w.strip())
-                    if result == "Added":
-                        added_count += 1
-                    elif result == "Exists":
-                        skipped_count += 1
-            st.success(f"✅ Added {added_count} words, ⚠️ Skipped {skipped_count} existing words")
+        # Enhanced quiz log
+        c.execute("""CREATE TABLE IF NOT EXISTS quiz_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            date TEXT NOT NULL,
+            quiz_type TEXT NOT NULL,
+            length INTEGER NOT NULL,
+            correct INTEGER NOT NULL,
+            time_spent REAL NOT NULL,
+            accuracy REAL,
+            points_earned INTEGER DEFAULT 0,
+            FOREIGN KEY (username) REFERENCES users(username)
+        )""")
         
-        up = st.file_uploader("Or upload .txt file")
-        if up:
-            content = up.read().decode()
-            added_count = 0
-            skipped_count = 0
-            for w in content.splitlines():
-                if w.strip():
-                    result = add_word(w.strip())
-                    if result == "Added":
-                        added_count += 1
-                    elif result == "Exists":
-                        skipped_count += 1
-            st.success(f"✅ Added {added_count} words from file, ⚠️ Skipped {skipped_count} existing words")
-
-# ---------- WORD OF THE DAY ----------
-def get_word_of_the_day():
-    # Get a random word for today
-    words = conn_w.execute("SELECT word FROM words ORDER BY RANDOM() LIMIT 1").fetchall()
-    if words:
-        word = words[0][0]
-        details = conn_w.execute("SELECT def,pron,ex1 FROM words WHERE word=?", (word,)).fetchone()
-        return word, details
-    return None, None
-
-def display_word_of_the_day():
-    # Check if user has hidden WOD today
-    hidden_key = f"wod_hidden_{str(TODAY_IST)}"
-    if st.session_state.get(hidden_key, False):
-        return
-    
-    word, details = get_word_of_the_day()
-    if word and details:
-        def_text, pron, ex1 = details
+        # Word-user relationship with spaced repetition data
+        c.execute("""CREATE TABLE IF NOT EXISTS word_user(
+            username TEXT NOT NULL,
+            word TEXT NOT NULL,
+            status TEXT NOT NULL,
+            date TEXT NOT NULL,
+            attempts INTEGER DEFAULT 1,
+            last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+            next_review TEXT,
+            ease_factor REAL DEFAULT 2.5,
+            interval_days INTEGER DEFAULT 1,
+            repetitions INTEGER DEFAULT 0,
+            PRIMARY KEY(username, word),
+            FOREIGN KEY (username) REFERENCES users(username)
+        )""")
         
-        with st.container():
-            st.markdown('<div class="wod-container">', unsafe_allow_html=True)
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                st.markdown(f"### 🌟 Word of the Day: **{word.upper()}**")
-                st.write("**Pronunciation:**", pron)
-                st.write("**Definition:**", def_text)
-                if ex1: st.write("**Example:**", ex1)
-            with col2:
-                if st.button("🙈 Hide", key="hide_wod"):
-                    st.session_state[hidden_key] = True
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# ---------- GAMIFICATION ----------
-def calculate_level(points):
-    return int(points / 100) + 1
-
-def award_achievements(username, points, streak, total_known):
-    achievements = []
-    
-    # Points-based achievements
-    if points >= 100: achievements.append("🥉 First Century")
-    if points >= 500: achievements.append("🥈 Half Millennium")
-    if points >= 1000: achievements.append("🥇 Millennium Master")
-    
-    # Streak achievements
-    if streak >= 7: achievements.append("🔥 Week Streak")
-    if streak >= 30: achievements.append("⭐ Monthly Master")
-    if streak >= 100: achievements.append("👑 Century Streak")
-    
-    # Knowledge achievements
-    if total_known >= 50: achievements.append("📚 Vocabulary Builder")
-    if total_known >= 200: achievements.append("🎓 Word Scholar")
-    if total_known >= 500: achievements.append("🧠 Lexicon Legend")
-    
-    # Award new achievements
-    for achievement in achievements:
-        exists = conn_u.execute("SELECT 1 FROM user_achievements WHERE username=? AND achievement=?", 
-                               (username, achievement)).fetchone()
-        if not exists:
-            conn_u.execute("INSERT INTO user_achievements(username, achievement, date_earned) VALUES(?,?,?)",
-                          (username, achievement, str(TODAY_IST)))
-            conn_u.commit()
-    
-    return achievements
-
-def display_achievements(username):
-    achievements = conn_u.execute("SELECT achievement FROM user_achievements WHERE username=? ORDER BY date_earned DESC", 
-                                 (username,)).fetchall()
-    if achievements:
-        st.write("### 🏆 Your Achievements")
-        for ach, in achievements[:10]:  # Show latest 10
-            st.markdown(f'<span class="achievement-badge">{ach}</span>', unsafe_allow_html=True)
-
-# ---------- SOCIAL FEATURES ----------
-def follow_user(follower, following):
-    if follower != following:
-        conn_u.execute("INSERT OR IGNORE INTO follows(follower, following) VALUES(?,?)", (follower, following))
-        conn_u.commit()
-
-def unfollow_user(follower, following):
-    conn_u.execute("DELETE FROM follows WHERE follower=? AND following=?", (follower, following))
-    conn_u.commit()
-
-def get_following(username):
-    return [u for u, in conn_u.execute("SELECT following FROM follows WHERE follower=?", (username,)).fetchall()]
-
-def get_followers(username):
-    return [u for u, in conn_u.execute("SELECT follower FROM follows WHERE following=?", (username,)).fetchall()]
-
-# ---------- STUDY MODE (FLASHCARDS) ----------
-def study_mode(username):
-    st.write("### 🃏 Flashcard Study Mode")
-    
-    # Get known words for this user - FIXED QUERY
-    try:
-        known_words = conn_u.execute("""
-            SELECT w.word, w.def, w.pron, w.ex1 
-            FROM word_user wu 
-            JOIN words w ON wu.word = w.word 
-            WHERE wu.username=? AND wu.status='known'
-        """, (username,)).fetchall()
-    except:
-        known_words = []  # Handle case where tables are empty or query fails
-    
-    if not known_words:
-        st.info("You don't have any known words yet. Take a quiz to learn some words first!")
-        return
-    
-    # Session state for flashcard navigation
-    if 'current_card' not in st.session_state:
-        st.session_state.current_card = 0
-    if 'show_back' not in st.session_state:
-        st.session_state.show_back = False
-    
-    current_idx = st.session_state.current_card
-    if current_idx >= len(known_words):
-        st.session_state.current_card = 0
-        current_idx = 0
-    
-    if len(known_words) > 0:
-        word, definition, pronunciation, example = known_words[current_idx]
+        # Social features
+        c.execute("""CREATE TABLE IF NOT EXISTS follows(
+            follower TEXT NOT NULL,
+            following TEXT NOT NULL,
+            date_followed TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(follower, following),
+            FOREIGN KEY (follower) REFERENCES users(username),
+            FOREIGN KEY (following) REFERENCES users(username)
+        )""")
         
-        # Flashcard display
-        if st.button(" Flip Card " if not st.session_state.show_back else " Flip Back ", key="flip"):
-            st.session_state.show_back = not st.session_state.show_back
-            st.rerun()
+        # Enhanced achievements
+        c.execute("""CREATE TABLE IF NOT EXISTS user_achievements(
+            username TEXT NOT NULL,
+            achievement TEXT NOT NULL,
+            date_earned TEXT NOT NULL,
+            points_earned INTEGER DEFAULT 0,
+            PRIMARY KEY(username, achievement),
+            FOREIGN KEY (username) REFERENCES users(username)
+        )""")
         
-        st.markdown('<div class="flashcard">', unsafe_allow_html=True)
-        if not st.session_state.show_back:
-            st.markdown(f"### {word.upper()}")
-            st.write("*Click 'Flip Card' to see definition*")
+        # Daily challenges
+        c.execute("""CREATE TABLE IF NOT EXISTS daily_challenges(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            challenge_type TEXT NOT NULL,
+            target_value INTEGER NOT NULL,
+            reward_points INTEGER DEFAULT 50,
+            description TEXT
+        )""")
+        
+        # Challenge completions
+        c.execute("""CREATE TABLE IF NOT EXISTS challenge_completions(
+            username TEXT NOT NULL,
+            challenge_id INTEGER NOT NULL,
+            completed_date TEXT NOT NULL,
+            points_earned INTEGER DEFAULT 0,
+            PRIMARY KEY(username, challenge_id),
+            FOREIGN KEY (username) REFERENCES users(username),
+            FOREIGN KEY (challenge_id) REFERENCES daily_challenges(id)
+        )""")
+        
+        # Study sessions
+        c.execute("""CREATE TABLE IF NOT EXISTS study_sessions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            session_type TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            duration REAL,
+            cards_reviewed INTEGER DEFAULT 0,
+            FOREIGN KEY (username) REFERENCES users(username)
+        )""")
+        
+        conn.commit()
+        return conn
+    
+    def init_word_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(DB_W, check_same_thread=False)
+        c = conn.cursor()
+        
+        # Enhanced words table
+        c.execute("""CREATE TABLE IF NOT EXISTS words(
+            word TEXT PRIMARY KEY,
+            definition TEXT NOT NULL,
+            pronunciation TEXT,
+            etymology TEXT,
+            example1 TEXT,
+            example2 TEXT,
+            added_by TEXT DEFAULT 'system',
+            date_added TEXT DEFAULT CURRENT_TIMESTAMP,
+            usage_count INTEGER DEFAULT 0,
+            last_used TEXT
+        )""")
+        
+        # Enhanced suggestions
+        c.execute("""CREATE TABLE IF NOT EXISTS suggestions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            word TEXT NOT NULL,
+            username TEXT NOT NULL,
+            date TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            reviewed_by TEXT,
+            reviewed_date TEXT,
+            notes TEXT
+        )""")
+        
+        conn.commit()
+        return conn
+    
+    def close_connections(self):
+        """Properly close database connections"""
+        try:
+            self.conn_u.close()
+            self.conn_w.close()
+        except Exception as e:
+            logger.error(f"Error closing connections: {e}")
+
+# ---------- AUTHENTICATION MANAGER ----------
+class AuthManager:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+        self.ensure_default_users()
+    
+    @staticmethod
+    def hash_password(password: str) -> str:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    @staticmethod
+    def verify_password(password: str, hashed: str) -> bool:
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+        except Exception as e:
+            logger.error(f"Password verification error: {e}")
+            return False
+    
+    def ensure_default_users(self):
+        try:
+            # Create demo user
+            demo_exists = self.db.conn_u.execute("SELECT 1 FROM users WHERE username='demo'").fetchone()
+            if not demo_exists:
+                demo_hash = self.hash_password("demo")
+                self.db.conn_u.execute(
+                    "INSERT INTO users(username, pwd_hash) VALUES(?, ?)", 
+                    ("demo", demo_hash)
+                )
+            
+            # Create admin user
+            admin_exists = self.db.conn_u.execute("SELECT 1 FROM users WHERE username='admin'").fetchone()
+            if not admin_exists:
+                admin_hash = self.hash_password("admin@123")
+                self.db.conn_u.execute(
+                    "INSERT INTO users(username, pwd_hash) VALUES(?, ?)", 
+                    ("admin", admin_hash)
+                )
+            
+            self.db.conn_u.commit()
+        except Exception as e:
+            logger.error(f"Error creating default users: {e}")
+    
+    def authenticate(self, username: str, password: str) -> bool:
+        try:
+            user = self.db.conn_u.execute(
+                "SELECT pwd_hash FROM users WHERE username=?", 
+                (username,)
+            ).fetchone()
+            
+            if user and self.verify_password(password, user[0]):
+                # Update last login
+                self.db.conn_u.execute(
+                    "UPDATE users SET last_login=? WHERE username=?",
+                    (str(dt.datetime.now(IST)), username)
+                )
+                self.db.conn_u.commit()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Authentication error: {e}")
+            return False
+    
+    def register(self, username: str, password: str) -> Tuple[bool, str]:
+        try:
+            if not username or not password:
+                return False, "Username and password are required"
+            
+            if len(username) < 3:
+                return False, "Username must be at least 3 characters"
+            
+            if len(password) < 4:
+                return False, "Password must be at least 4 characters"
+            
+            # Check for invalid characters
+            if not username.replace("_", "").replace("-", "").isalnum():
+                return False, "Username can only contain letters, numbers, hyphens, and underscores"
+            
+            existing = self.db.conn_u.execute(
+                "SELECT 1 FROM users WHERE username=?", 
+                (username,)
+            ).fetchone()
+            
+            if existing:
+                return False, "Username already taken"
+            
+            pwd_hash = self.hash_password(password)
+            self.db.conn_u.execute(
+                "INSERT INTO users(username, pwd_hash) VALUES(?, ?)",
+                (username, pwd_hash)
+            )
+            self.db.conn_u.commit()
+            
+            return True, "Account created successfully"
+        
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            return False, "Registration failed"
+
+# ---------- WORD MANAGER ----------
+class WordManager:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+    
+    def add_word(self, word: str, added_by: str = "admin") -> str:
+        word = word.lower().strip()
+        
+        if not word or len(word) < 2:
+            return "Invalid word"
+        
+        if self.db.conn_w.execute("SELECT 1 FROM words WHERE word=?", (word,)).fetchone():
+            return "Word already exists"
+        
+        try:
+            # Get word information with better error handling
+            definition_text = "No definition available"
+            pronunciation = ""
+            examples = []
+            
+            try:
+                meanings = self.db.dictionary.meaning(word)
+                if meanings:
+                    definition_parts = []
+                    for part_of_speech, definitions in meanings.items():
+                        for definition in definitions[:2]:  # Limit to 2 definitions per part
+                            definition_parts.append(f"{part_of_speech}: {definition}")
+                    definition_text = "; ".join(definition_parts)
+            except Exception as e:
+                logger.warning(f"Failed to get definition for '{word}': {e}")
+            
+            try:
+                pronunciation = self.db.dictionary.getPhonetic(word) or ""
+            except Exception as e:
+                logger.warning(f"Failed to get pronunciation for '{word}': {e}")
+            
+            try:
+                examples = self.db.dictionary.getSentences(word) or []
+            except Exception as e:
+                logger.warning(f"Failed to get examples for '{word}': {e}")
+            
+            # Insert word
+            self.db.conn_w.execute("""
+                INSERT INTO words(word, definition, pronunciation, etymology, example1, example2, added_by, date_added)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                word, definition_text, pronunciation, "",
+                examples[0] if examples else "",
+                examples[1] if len(examples) > 1 else "",
+                added_by, str(TODAY_IST)
+            ))
+            
+            self.db.conn_w.commit()
+            return "Word added successfully"
+        
+        except Exception as e:
+            logger.error(f"Error adding word '{word}': {e}")
+            return f"Error adding word: {str(e)}"
+    
+    def get_word_details(self, word: str) -> Optional[Dict]:
+        try:
+            result = self.db.conn_w.execute("""
+                SELECT word, definition, pronunciation, example1, example2, etymology
+                FROM words WHERE word=?
+            """, (word,)).fetchone()
+            
+            if result:
+                return {
+                    'word': result[0],
+                    'definition': result[1],
+                    'pronunciation': result[2],
+                    'example1': result[3],
+                    'example2': result[4],
+                    'etymology': result[5]
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting word details for '{word}': {e}")
+            return None
+    
+    def update_word_usage(self, word: str):
+        """Update word usage statistics"""
+        try:
+            self.db.conn_w.execute("""
+                UPDATE words 
+                SET usage_count = usage_count + 1, last_used = ?
+                WHERE word = ?
+            """, (str(TODAY_IST), word))
+            self.db.conn_w.commit()
+        except Exception as e:
+            logger.error(f"Error updating word usage for '{word}': {e}")
+
+# ---------- SPACED REPETITION SYSTEM ----------
+class SpacedRepetitionManager:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+    
+    def calculate_next_review(self, ease_factor: float, interval_days: int, repetitions: int, quality: int) -> Tuple[int, float, int]:
+        """
+        Calculate next review interval using SM-2 algorithm
+        quality: 0-5 (0=total blackout, 5=perfect response)
+        """
+        repetitions += 1
+        
+        if quality < 3:
+            # Reset if quality is poor
+            repetitions = 0
+            interval_days = 1
         else:
-            st.write("**Pronunciation:**", pronunciation)
-            st.write("**Definition:**", definition)
-            if example: st.write("**Example:**", example)
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Navigation
-        col1, col2, col3 = st.columns([1,2,1])
-        with col1:
-            if st.button("⬅️ Previous") and current_idx > 0:
-                st.session_state.current_card -= 1
-                st.session_state.show_back = False
-                st.rerun()
-        with col2:
-            st.write(f"Card {current_idx + 1} of {len(known_words)}")
-        with col3:
-            if st.button("Next ➡️") and current_idx < len(known_words) - 1:
-                st.session_state.current_card += 1
-                st.session_state.show_back = False
-                st.rerun()
-
-# ---------- STREAK ----------
-def streak_info(username):
-    row = conn_u.execute("SELECT streak, last_quiz_date FROM users WHERE username=?", (username,)).fetchone()
-    if not row or not row[1]: return 0
-    last = dt.date.fromisoformat(row[1])
-    if (TODAY_IST - last).days == 0: return row[0]
-    if (TODAY_IST - last).days == 1: return row[0]
-    return 0
-
-def update_streak(username):
-    s = streak_info(username)
-    row = conn_u.execute("SELECT last_quiz_date FROM users WHERE username=?", (username,)).fetchone()
-    last = row[0] if row and row[0] else None
-    if last is None or dt.date.fromisoformat(last) < TODAY_IST:
-        if last is None or (TODAY_IST - dt.date.fromisoformat(last)).days == 1: s += 1
-        else: s = 1
-        conn_u.execute("UPDATE users SET streak=?, last_quiz_date=? WHERE username=?", (s, str(TODAY_IST), username))
-        conn_u.commit()
-    return s
-
-# ---------- QUIZ ----------
-def pick_words(username, mode, length):
-    known   = {w for w, in conn_u.execute("SELECT word FROM word_user WHERE username=? AND status='known'", (username,))}
-    all_w   = {w for w, in conn_w.execute("SELECT word FROM words").fetchall()}
-    unknown = all_w - known
-    if mode == "refresher": pool = list(known)
-    elif mode == "new":     pool = list(unknown) if unknown else list(all_w)
-    else:                   pool = list(all_w)
-    random.shuffle(pool); return pool[:length]
-
-def run_quiz(username, words, mode):
-    st.write(f"**{mode.title()} quiz – {len(words)} words**")
-    known, unknown = [], []
-    start = time.time()
-    prog = st.progress(0)
-    for idx, word in enumerate(words):
-        c1, c2, c3 = st.columns([3,1,1])
-        c1.markdown(f"## {word.upper()}")
-        know = c2.button("Know",  key=f"k{idx}", type="primary")
-        dont = c3.button("Don't", key=f"d{idx}")
-        if know:
-            known.append(word)
-            conn_u.execute("REPLACE INTO word_user(username,word,status,date) VALUES(?,?,?,?)",
-                          (username, word, "known", str(TODAY_IST)))
-        elif dont:
-            unknown.append(word)
-            conn_u.execute("REPLACE INTO word_user(username,word,status,date) VALUES(?,?,?,?)",
-                          (username, word, "unknown", str(TODAY_IST)))
-        conn_u.commit()
-        prog.progress((idx+1)/len(words))
-        if know or dont: st.rerun()
-    elapsed = time.time() - start
-    corr = len(known)
-    
-    # Update points and level
-    points_earned = corr * 10
-    conn_u.execute("""
-        UPDATE users 
-        SET total_q=total_q+?, correct=correct+?, time_spent=time_spent+?, points=points+?
-        WHERE username=?
-    """, (len(words), corr, elapsed, points_earned, username))
-    
-    conn_u.execute("INSERT INTO quiz_log(username,date,quiz_type,length,correct,time_spent) VALUES(?,?,?,?,?,?)",
-                  (username, str(TODAY_IST), mode, len(words), corr, elapsed))
-    conn_u.commit()
-    
-    st.success(f"{corr}/{len(words)} known in {elapsed:.1f} s (+{points_earned} points)")
-    
-    # Award achievements
-    user_data = conn_u.execute("SELECT points, streak, correct FROM users WHERE username=?", (username,)).fetchone()
-    if user_data:
-        points, streak, total_correct = user_data
-        award_achievements(username, points, streak, total_correct)
-    
-    for w in words:
-        r = conn_w.execute("SELECT def,pron,ex1,ex2 FROM words WHERE word=?", (w,)).fetchone()
-        if r:
-            d, p, e1, e2 = r
-            with st.expander(w.upper()):
-                st.write("**Pronunciation:**", p); st.write("**Definition:**", d)
-                if e1: st.write("**Ex1:**", e1)
-                if e2: st.write("**Ex2:**", e2)
-    s = update_streak(username)
-    if s: st.balloons(); st.info(f"🔥 Streak: {s}")
-
-# ---------- MAIN UI ----------
-st.title("📚 Daily Vocab Quiz")
-
-# Display Word of the Day
-display_word_of_the_day()
-
-# User stats
-user_data = conn_u.execute("SELECT streak, correct, points, level FROM users WHERE username=?", (username,)).fetchone()
-if user_data:
-    streak, correct, points, level = user_data
-    next_level = (level + 1) * 100
-    progress = (points % 100) / 100 if points % 100 != 0 else 1
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("🔥 Streak", streak)
-    col2.metric("✅ Known", correct)
-    col3.metric("⭐ Level", level)
-    col4.metric("💎 Points", points)
-    
-    st.progress(progress, f"Progress to Level {level + 1}: {points % 100}/100 points")
-
-display_achievements(username)
-
-# Main tabs
-tab1, tab2, tab3, tab4 = st.tabs(["🎮 Quiz", "🃏 Study Mode", "👥 Social", "🏆 Leaderboard"])
-
-with tab1:
-    mode = st.radio("Mode", ["New words", "Refresher (known words)", "Mixed"])
-    length = st.selectbox("How many words?", [10, 20, 30, 50])
-    if st.button("Start quiz"):
-        words = pick_words(username, mode.lower().split()[0], length)
-        if not words: st.warning("Ask admin to add words"); st.stop()
-        run_quiz(username, words, mode.lower().split()[0])
-
-with tab2:
-    study_mode(username)
-
-with tab3:
-    st.write("### 👥 Social Features")
-    
-    # Follow users
-    all_users = [u for u, in conn_u.execute("SELECT username FROM users WHERE username!=?", (username,)).fetchall()]
-    if all_users:
-        st.write("#### Follow Friends")
-        for user in all_users[:10]:  # Show first 10 users
-            col1, col2 = st.columns([3, 1])
-            col1.write(f"**{user}**")
-            is_following = conn_u.execute("SELECT 1 FROM follows WHERE follower=? AND following=?", 
-                                         (username, user)).fetchone()
-            if is_following:
-                if col2.button("Unfollow", key=f"unfollow_{user}"):
-                    unfollow_user(username, user)
-                    st.rerun()
+            if repetitions <= 2:
+                interval_days = 1 if repetitions == 1 else 6
             else:
-                if col2.button("Follow", key=f"follow_{user}"):
-                    follow_user(username, user)
-                    st.rerun()
+                interval_days = int(interval_days * ease_factor)
+        
+        # Update ease factor
+        ease_factor = ease_factor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+        ease_factor = max(1.3, ease_factor)  # Minimum ease factor
+        
+        return interval_days, ease_factor, repetitions
     
-    # Show following/followers
-    following = get_following(username)
-    followers = get_followers(username)
+    def update_word_memory(self, username: str, word: str, quality: int):
+        """Update spaced repetition data for a word"""
+        try:
+            # Get current data
+            result = self.db.conn_u.execute("""
+                SELECT ease_factor, interval_days, repetitions
+                FROM word_user
+                WHERE username = ? AND word = ?
+            """, (username, word)).fetchone()
+            
+            if result:
+                ease_factor, interval_days, repetitions = result
+            else:
+                ease_factor, interval_days, repetitions = 2.5, 1, 0
+            
+            # Calculate next review
+            new_interval, new_ease, new_repetitions = self.calculate_next_review(
+                ease_factor, interval_days, repetitions, quality
+            )
+            
+            # Calculate next review date
+            next_review_date = TODAY_IST + dt.timedelta(days=new_interval)
+            
+            # Update database
+            self.db.conn_u.execute("""
+                UPDATE word_user
+                SET ease_factor = ?, interval_days = ?, repetitions = ?, 
+                    next_review = ?, last_seen = ?
+                WHERE username = ? AND word = ?
+            """, (new_ease, new_interval, new_repetitions, 
+                  str(next_review_date), str(TODAY_IST), username, word))
+            
+            self.db.conn_u.commit()
+        
+        except Exception as e:
+            logger.error(f"Error updating word memory: {e}")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("#### Following")
-        if following:
-            for user in following:
-                st.write(f"👤 {user}")
-        else:
-            st.info("You're not following anyone yet")
-    
-    with col2:
-        st.write("#### Followers")
-        if followers:
-            for user in followers:
-                st.write(f"👥 {user}")
-        else:
-            st.info("No followers yet")
+    def get_due_words(self, username: str, limit: int = 20) -> List[str]:
+        """Get words due for review"""
+        try:
+            result = self.db.conn_u.execute("""
+                SELECT word FROM word_user
+                WHERE username = ? AND status = 'known'
+                AND (next_review IS NULL OR next_review <= ?)
+                ORDER BY last_seen ASC
+                LIMIT ?
+            """, (username, str(TODAY_IST), limit)).fetchall()
+            
+            return [word for word, in result]
+        
+        except Exception as e:
+            logger.error(f"Error getting due words: {e}")
+            return []
 
-with tab4:
-    st.write("### 🏆 Leaderboard")
+# ---------- GAMIFICATION MANAGER ----------
+class GamificationManager:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+        self.achievements_config = {
+            # Points-based achievements
+            "🥉 First Century": {"type": "points", "threshold": 100, "points": 50},
+            "🥈 Half Millennium": {"type": "points", "threshold": 500, "points": 100},
+            "🥇 Millennium Master": {"type": "points", "threshold": 1000, "points": 200},
+            "💎 Point Collector": {"type": "points", "threshold": 2000, "points": 300},
+            "🚀 Sky High": {"type": "points", "threshold": 5000, "points": 500},
+            
+            # Streak achievements
+            "🔥 Week Streak": {"type": "streak", "threshold": 7, "points": 70},
+            "⭐ Monthly Master": {"type": "streak", "threshold": 30, "points": 300},
+            "👑 Century Streak": {"type": "streak", "threshold": 100, "points": 1000},
+            
+            # Knowledge achievements
+            "📚 Vocabulary Builder": {"type": "known", "threshold": 50, "points": 100},
+            "🎓 Word Scholar": {"type": "known", "threshold": 200, "points": 300},
+            "🧠 Lexicon Legend": {"type": "known", "threshold": 500, "points": 500},
+            "📖 Dictionary Master": {"type": "known", "threshold": 1000, "points": 1000},
+            
+            # Quiz achievements
+            "🎯 Perfect Score": {"type": "perfect_quiz", "threshold": 1, "points": 50},
+            "⚡ Speed Demon": {"type": "fast_quiz", "threshold": 1, "points": 30},
+            "📊 Quiz Master": {"type": "total_quizzes", "threshold": 50, "points": 200},
+            "🏃 Marathon Runner": {"type": "total_quizzes", "threshold": 100, "points": 400},
+            
+            # Study achievements
+            "📝 Dedicated Learner": {"type": "study_time", "threshold": 3600, "points": 150},  # 1 hour
+            "⏰ Time Master": {"type": "study_time", "threshold": 18000, "points": 500},  # 5 hours
+            
+            # Social achievements
+            "👥 Social Butterfly": {"type": "followers", "threshold": 5, "points": 100},
+            "🌟 Influencer": {"type": "followers", "threshold": 20, "points": 300},
+        }
     
-    # Friend leaderboard (people you follow + you)
-    following = get_following(username)
-    friend_list = following + [username]
-    friend_list = list(set(friend_list))  # Remove duplicates
+    def calculate_level(self, points: int) -> int:
+        return min(int(points / 100) + 1, 50)
     
-    df = pd.read_sql_query("""
-        SELECT username, streak, correct, points, level
-        FROM users 
-        WHERE username IN ({})
-        ORDER BY points DESC, streak DESC
-    """.format(','.join('?' * len(friend_list))), conn_u, params=friend_list)
+    def get_level_progress(self, points: int) -> Tuple[int, int, float]:
+        level = self.calculate_level(points)
+        next_threshold = level * 100
+        current_progress = points % 100 if points % 100 != 0 else 100
+        progress_ratio = current_progress / 100
+        
+        return level, next_threshold, progress_ratio
     
-    if not df.empty:
-        df['rank'] = range(1, len(df) + 1)
-        df = df[['rank', 'username', 'level', 'points', 'streak', 'correct']]
-        df.columns = ['Rank', 'User', 'Level', 'Points', 'Streak', 'Known']
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        st.info("Follow some friends to see a personalized leaderboard!")
+    def award_achievements(self, username: str) -> List[str]:
+        try:
+            # Get comprehensive user stats
+            user_stats = self.db.conn_u.execute("""
+                SELECT points, streak, correct, total_q, total_study_time
+                FROM users WHERE username=?
+            """, (username,)).fetchone()
+            
+            if not user_stats:
+                return []
+            
+            points, streak, known_words, total_quizzes, study_time = user_stats
+            
+            # Get followers count
+            followers_count = len(self.db.conn_u.execute(
+                "SELECT follower FROM follows WHERE following=?", 
+                (username,)
+            ).fetchall())
+            
+            # Get existing achievements
+            existing = {ach for ach, in self.db.conn_u.execute(
+                "SELECT achievement FROM user_achievements WHERE username=?", 
+                (username,)
+            ).fetchall()}
+            
+            new_achievements = []
+            
+            for achievement, config in self.achievements_config.items():
+                if achievement in existing:
+                    continue
+                
+                should_award = False
+                
+                if config["type"] == "points" and points >= config["threshold"]:
+                    should_award = True
+                elif config["type"] == "streak" and streak >= config["threshold"]:
+                    should_award = True
+                elif config["type"] == "known" and known_words >= config["threshold"]:
+                    should_award = True
+                elif config["type"] == "total_quizzes" and total_quizzes >= config["threshold"]:
+                    should_award = True
+                elif config["type"] == "study_time" and study_time >= config["threshold"]:
+                    should_award = True
+                elif config["type"] == "followers" and followers_count >= config["threshold"]:
+                    should_award = True
+                
+                if should_award:
+                    self.db.conn_u.execute("""
+                        INSERT INTO user_achievements(username, achievement, date_earned, points_earned)
+                        VALUES(?, ?, ?, ?)
+                    """, (username, achievement, str(TODAY_IST), config["points"]))
+                    
+                    # Add bonus points
+                    self.db.conn_u.execute(
+                        "UPDATE users SET points = points + ? WHERE username = ?",
+                        (config["points"], username)
+                    )
+                    
+                    new_achievements.append(achievement)
+            
+            if new_achievements:
+                self.db.conn_u.commit()
+            
+            return new_achievements
+        
+        except Exception as e:
+            logger.error(f"Error awarding achievements: {e}")
+            return []
     
-    # Global leaderboard
-    st.write("### 🌍 Global Leaderboard")
-    global_df = pd.read_sql_query("""
-        SELECT username, level, points, streak, correct
-        FROM users 
-        ORDER BY points DESC, streak DESC
-        LIMIT 10
-    """, conn_u)
+    def create_daily_challenge(self) -> bool:
+        """Create daily challenge if it doesn't exist for today"""
+        try:
+            existing = self.db.conn_u.execute(
+                "SELECT 1 FROM daily_challenges WHERE date=?",
+                (str(TODAY_IST),)
+            ).fetchone()
+            
+            if existing:
+                return False
+            
+            # Create a random challenge
+            challenges = [
+                {"type": "quiz_words", "target": 20, "reward": 100, "desc": "Complete a 20-word quiz"},
+                {"type": "perfect_quiz", "target": 1, "reward": 150, "desc": "Get 100% on any quiz"},
+                {"type": "study_time", "target": 1800, "reward": 80, "desc": "Study for 30 minutes"},
+                {"type": "learn_new", "target": 10, "reward": 120, "desc": "Learn 10 new words"},
+            ]
+            
+            challenge = random.choice(challenges)
+            
+            self.db.conn_u.execute("""
+                INSERT INTO daily_challenges(date, challenge_type, target_value, reward_points, description)
+                VALUES(?, ?, ?, ?, ?)
+            """, (str(TODAY_IST), challenge["type"], challenge["target"], 
+                  challenge["reward"], challenge["desc"]))
+            
+            self.db.conn_u.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating daily challenge: {e}")
+            return False
     
-    if not global_df.empty:
-        global_df['rank'] = range(1, len(global_df) + 1)
-        global_df = global_df[['rank', 'username', 'level', 'points', 'streak', 'correct']]
-        global_df.columns = ['Rank', 'User', 'Level', 'Points', 'Streak', 'Known']
-        st.dataframe(global_df, use_container_width=True, hide_index=True)
-
-with st.expander("Suggest a new word"):
-    sw = st.text_input("Word")
-    if st.button("Suggest"):
-        conn_w.execute("INSERT INTO suggestions(word,username,date) VALUES(?,?,?)", (sw, username, str(TODAY_IST)))
-        conn_w.commit(); st.success("Suggested!")
-
-# Add some sample words for testing
-if username == "admin":
-    if st.sidebar.button("Add Sample Words"):
-        sample_words = ["serendipity", "ephemeral", "ubiquitous", "eloquent", "pragmatic"]
-        added = 0
-        skipped = 0
-        for word in sample_words:
-            result = add_word(word, "admin")
-            if result == "Added":
-                added += 1
-            elif result == "Exists":
-                skipped += 1
-        st.sidebar.success(f"Added {added} sample words, skipped {skipped} existing words!")
+    def get_daily_challenge(self) -> Optional[Dict]:
+        """Get today's challenge"""
+        try:
+            result = self.db.conn_u.execute("""
+                SELECT id, challenge_type, target_value, reward_points, description
+                FROM daily_challenges WHERE date=?
+            """, (str(TODAY_IST),)).fetchone()
+            
+            if result:
+                return {
+                    'id': result[0],
+                    'type': result[1],
+                    'target': result[2],
+                    'reward': result[3],
+                    'description': result[4]
+                }
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting daily challenge: {e}")
+            return None
+    
+    def check_challenge_completion(self, username: str) -> Optional[str]:
+        """Check if user completed today's challenge"""
+        try:
+            challenge = self.get_daily_challenge()
+            if not challenge:
+                return None
+            
+            # Check if already completed
+            completed = self.db.conn_u.execute("""
+                SELECT 1 FROM challenge_completions 
+                WHERE username=? AND challenge_id=?
+            """, (username, challenge['id'])).fetchone()
+            
+            if completed:
+                return None
+            
+            # Check completion based on challenge type
+            completed_now = False
+            
+            if challenge['type'] == 'quiz_words':
+                # Check if user completed enough quiz words today
+                total_today = self.db.conn_u.execute("""
+                    SELECT SUM(length) FROM quiz_log 
+                    WHERE username=? AND date=?
+                """, (username, str(TODAY_IST))).fetchone()[0] or 0
+                
+                if total_today >= challenge['target']:
+                    completed_now = True
+            
+            elif
