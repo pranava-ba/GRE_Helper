@@ -2,7 +2,6 @@
 import streamlit as st, sqlite3, pathlib, datetime as dt, pytz, time, random, pandas as pd
 from PyDictionary import PyDictionary
 import bcrypt
-# Create admin user if it doesn't exist
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="📚 Vocab Quiz", page_icon="📚", layout="wide")
@@ -115,11 +114,17 @@ def hash_password(password):
 def verify_password(password, hashed):
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-# Initialize demo user if needed
+# Initialize demo and admin users if needed
 c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
 if not c:
+    # Create demo user
     demo_hash = hash_password("demo")
     conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("demo", demo_hash))
+    
+    # Create admin user with password admin@123
+    admin_hash = hash_password("admin@123")
+    conn_u.execute("INSERT OR IGNORE INTO users(username,pwd_hash) VALUES(?,?)", ("admin", admin_hash))
+    
     conn_u.commit()
     c = conn_u.execute("SELECT username, pwd_hash FROM users").fetchall()
 
@@ -208,13 +213,28 @@ def add_word(word, by="admin"):
 
 with st.sidebar:
     if username == "admin":
-        st.write("### Admin")
+        st.write("### Admin Panel")
+        st.info("Admin password is: `admin@123`")
         batch = st.text_area("Paste words (line separated)")
         if st.button("Add batch"):
-            for w in batch.splitlines(): st.write(w, "→", add_word(w))
-        up = st.file_uploader("Or upload .txt")
+            added_count = 0
+            for w in batch.splitlines():
+                if w.strip():
+                    result = add_word(w.strip())
+                    if result == "Added":
+                        added_count += 1
+            st.success(f"Added {added_count} words!")
+        
+        up = st.file_uploader("Or upload .txt file")
         if up:
-            for w in up.read().decode().splitlines(): add_word(w)
+            content = up.read().decode()
+            added_count = 0
+            for w in content.splitlines():
+                if w.strip():
+                    result = add_word(w.strip())
+                    if result == "Added":
+                        added_count += 1
+            st.success(f"Added {added_count} words from file!")
 
 # ---------- WORD OF THE DAY ----------
 def get_word_of_the_day():
@@ -311,13 +331,16 @@ def get_followers(username):
 def study_mode(username):
     st.write("### 🃏 Flashcard Study Mode")
     
-    # Get known words for this user
-    known_words = conn_u.execute("""
-        SELECT w.word, w.def, w.pron, w.ex1 
-        FROM word_user wu 
-        JOIN words w ON wu.word = w.word 
-        WHERE wu.username=? AND wu.status='known'
-    """, (username,)).fetchall()
+    # Get known words for this user - FIXED QUERY
+    try:
+        known_words = conn_u.execute("""
+            SELECT w.word, w.def, w.pron, w.ex1 
+            FROM word_user wu 
+            JOIN words w ON wu.word = w.word 
+            WHERE wu.username=? AND wu.status='known'
+        """, (username,)).fetchall()
+    except:
+        known_words = []  # Handle case where tables are empty or query fails
     
     if not known_words:
         st.info("You don't have any known words yet. Take a quiz to learn some words first!")
@@ -330,6 +353,10 @@ def study_mode(username):
         st.session_state.show_back = False
     
     current_idx = st.session_state.current_card
+    if current_idx >= len(known_words):
+        st.session_state.current_card = 0
+        current_idx = 0
+    
     word, definition, pronunciation, example = known_words[current_idx]
     
     # Flashcard display
@@ -432,7 +459,7 @@ def run_quiz(username, words, mode):
     
     # Award achievements
     user_data = conn_u.execute("SELECT points, streak, correct FROM users WHERE username=?", (username,)).fetchone()
-    if user_data:
+    if user_
         points, streak, total_correct = user_data
         award_achievements(username, points, streak, total_correct)
     
@@ -455,7 +482,7 @@ display_word_of_the_day()
 
 # User stats
 user_data = conn_u.execute("SELECT streak, correct, points, level FROM users WHERE username=?", (username,)).fetchone()
-if user_data:
+if user_
     streak, correct, points, level = user_data
     next_level = (level + 1) * 100
     progress = (points % 100) / 100 if points % 100 != 0 else 1
@@ -570,8 +597,12 @@ with st.expander("Suggest a new word"):
         conn_w.execute("INSERT INTO suggestions(word,username,date) VALUES(?,?,?)", (sw, username, str(TODAY_IST)))
         conn_w.commit(); st.success("Suggested!")
 
-# Admin login info in sidebar
-with st.sidebar:
-    st.write("---")
-    st.write("### Admin Access")
-    st.info("Username: `admin`\n\nPassword: Set in `.streamlit/secrets.toml`")
+# Add some sample words for testing
+if username == "admin":
+    if st.sidebar.button("Add Sample Words"):
+        sample_words = ["serendipity", "ephemeral", "ubiquitous", "eloquent", "pragmatic"]
+        added = 0
+        for word in sample_words:
+            if add_word(word, "admin") == "Added":
+                added += 1
+        st.sidebar.success(f"Added {added} sample words!")
